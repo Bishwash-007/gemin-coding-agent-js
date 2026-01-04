@@ -10,7 +10,7 @@
 
 Brainiac AI is a powerful CLI-based coding agent that brings the intelligence of advanced AI directly to your terminal. Just like its namesake from Krypton, Brainiac AI possesses vast knowledge and capabilities to assist developers in their coding journey.
 
-Built with the power of Google's Gemini 2.5 Flash, Brainiac AI acts as your personal coding companion, understanding your needs and delivering production-ready solutions with the expertise of a senior developer.
+Powered by a locally hosted Ollama model (llama3.1 by default), Brainiac AI acts as your personal coding companion, understanding your needs and delivering production-ready solutions with the expertise of a senior developer—without sending source code outside your device.
 
 ---
 
@@ -38,6 +38,7 @@ Built with the power of Google's Gemini 2.5 Flash, Brainiac AI acts as your pers
 - Context-aware responses using conversation memory
 - Multi-step reasoning with function calling
 - Automatic rate limit handling and retries
+- Live code streaming in the terminal while files are written
 - Interactive follow-up questions to guide your workflow
 
 ---
@@ -48,16 +49,18 @@ Built with the power of Google's Gemini 2.5 Flash, Brainiac AI acts as your pers
 
 ```
 Runtime Environment:    Node.js (Latest LTS)
-AI/ML Framework:        Google GenAI SDK
-Language Model:         Gemini 2.5 Flash (gemini-2.5-flash)
+AI/ML Framework:        Ollama JavaScript client
+Language Model:         Configurable (default llama3.1 via Ollama)
 ```
 
 ### Key Dependencies
 
+- **ollama** - Local LLM client communication
 - **readline** - Interactive CLI input/output
 - **ora** - Terminal spinners and loading indicators
 - **chalk** - Terminal text styling and colors
-- **Vector Database** - Semantic memory storage for context retention
+- **zod** - JSON schema generation for tool validation
+- **execa** - Shell command execution helper
 
 ---
 
@@ -70,10 +73,10 @@ Extensible architecture with dedicated tools for:
 - Shell command execution
 - Project scaffolding and generation
 
-### Semantic Memory
-- Stores and retrieves conversation context
-- Enables continuity across sessions
-- Provides relevant historical information automatically
+### Conversation History
+- Maintains in-memory transcripts for the current session
+- Keeps tool inputs and outputs aligned with model reasoning
+- Provides relevant historical information automatically during the run
 
 ### CLI Interface
 - Color-coded output for enhanced readability
@@ -169,24 +172,27 @@ Our Brainiac AI embodies these qualities to help developers build, learn, and in
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/brainiac-ai.git
+git clone https://github.com/Bishwash-007/gemin-coding-agent-js.git
 
 # Navigate to project directory
-cd brainiac-ai
+cd gemin-coding-agent-js
 
 # Install dependencies
 npm install
 
 # Configure environment
 cp .env.example .env
-# Add your Google API key to .env
+# Ensure Ollama is running locally and adjust host/model in .env if needed
 ```
 
 ### Usage
 
 ```bash
+# Verify Ollama server is running in another terminal
+# ollama serve
+
 # Start Brainiac AI
-npm start
+npm run cli
 
 # Begin your coding session
 ❯ Hello Brainiac, let's build something amazing!
@@ -194,11 +200,11 @@ npm start
 
 ### Configuration
 
-Edit the `.env` file with your credentials:
+Edit the `.env` file to point at your local Ollama server:
 
 ```env
-GOOGLE_API_KEY=your_api_key_here
-MODEL_ID=gemini-2.5-flash
+OLLAMA_HOST=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.1
 ```
 
 ---
@@ -208,20 +214,21 @@ MODEL_ID=gemini-2.5-flash
 ### System Requirements
 - Node.js version 18.x or higher
 - Minimum 4GB RAM
-- Active internet connection for API calls
+- Ollama installed with the desired model pulled (default llama3.1)
+- Active internet connection for model downloads and git operations
 - Terminal with UTF-8 support
 
 ### API Integration
-- Uses Google GenAI SDK for model inference
-- Implements retry logic with exponential backoff
-- Handles rate limiting automatically
-- Supports streaming responses for real-time feedback
+- Communicates with a locally hosted Ollama server over HTTP
+- Implements retry logic with exponential backoff when the model is busy
+- Handles rate limiting automatically for concurrent requests
+- Streams tool output back to the CLI for real-time feedback
 
 ### Memory Management
-- Vector database for semantic search
-- Conversation history persistence
-- Context window optimization
-- Automatic cleanup of old sessions
+- Session-scoped history buffer shared with the model
+- Tool responses recorded alongside assistant messages
+- Lightweight context trimming to avoid oversized payloads
+- Reset automatically when you exit the CLI
 
 ---
 
@@ -229,22 +236,26 @@ MODEL_ID=gemini-2.5-flash
 
 ```
 brainiac-ai/
-├── src/
-│   ├── config/
-│   │   ├── gemini.js       # AI model configuration
-│   │   └── prompt.js       # System prompts
-│   ├── functions/
-│   │   └── index.js        # Tool declarations
-│   ├── utils/
-│   │   ├── memory.js       # Memory management
-│   │   └── ui.js           # CLI formatting
-│   └── index.js            # Main entry point
-├── projects/               # User-generated projects
-├── tests/                  # Test suites
-├── .env.example           # Environment template
-├── .gitignore
+├── index.js                # CLI entry point
 ├── package.json
-└── README.md
+├── brainiac_presentation.md
+├── config/
+│   ├── env.js              # Environment loader (OLLAMA_HOST, OLLAMA_MODEL)
+│   ├── gemini.js           # Ollama client bootstrap
+│   └── prompt.js           # System prompt
+├── functions/
+│   ├── create.js
+│   ├── delete.js
+│   ├── diff.js
+│   ├── format.js
+│   ├── index.js            # Tool registry
+│   ├── read.js
+│   ├── shell.js
+│   └── write.js
+├── projects/               # Generated user projects
+├── utils/
+│   └── ui.js               # CLI formatting helpers
+└── .env.example            # Environment template
 ```
 
 ---
@@ -271,7 +282,7 @@ npm test
 
 ## Acknowledgments
 
-**Google Gemini Team** - For providing the powerful AI model
+**Ollama Community** - For delivering accessible local model tooling
 **Open Source Community** - For the excellent tools and libraries
 **DC Comics** - For the inspiration behind the project name
 
