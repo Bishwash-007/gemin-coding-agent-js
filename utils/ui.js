@@ -39,6 +39,27 @@ export const logTool = (toolName) => {
   console.log(chalk.yellow(`\nExecuting tool: ${chalk.bold(toolName)}...`));
 };
 
+export const logToolResult = (toolName, result) => {
+  if (!result) {
+    return;
+  }
+  console.log(chalk.hex("#FFD700")(`-> ${toolName} result:`));
+
+  console.log(chalk.hex("#FFFFE0")(result));
+};
+
+export const logToolStreamStart = (target) => {
+  console.log(chalk.hex("#FFD700")(`   writing ${target}`));
+};
+
+export const logToolStreamChunk = (lineNumber, text) => {
+  const label =
+    typeof lineNumber === "number"
+      ? lineNumber.toString().padStart(4, " ")
+      : "    ";
+  console.log(chalk.hex("#D3D3D3")(`${label} | ${text}`));
+};
+
 export const logError = (error) => {
   console.log(chalk.red.bold("\nError:"));
   console.log(chalk.red(error));

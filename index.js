@@ -1,21 +1,27 @@
 import readline from "readline";
-import { ai } from "./config/gemini.js";
+import { ai, modelId } from "./config/ai.js";
 import { tools } from "./functions/index.js";
 import { systemPrompt } from "./config/prompt.js";
 import {
   showBanner,
   logAgent,
   logTool,
+  logToolResult,
+  logToolStreamStart,
+  logToolStreamChunk,
   logError,
   logFollowUp,
 } from "./utils/ui.js";
 import ora from "ora";
 import chalk from "chalk";
 
-const toolDeclarations = Object.values(tools).map((tool) => ({
-  name: tool.name,
-  description: tool.description,
-  parameters: tool.parameters,
+const toolDefinitions = Object.values(tools).map((tool) => ({
+  type: "function",
+  function: {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+  },
 }));
 
 const rl = readline.createInterface({
@@ -23,39 +29,38 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
-const modelId = "gemini-2.5-flash";
-
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function generateContentWithRetry(params, retries = 3) {
   try {
-    return await ai.models.generateContent(params);
+    return await ai.chat(params);
   } catch (error) {
-    if (
-      error.status === 429 ||
-      error.code === 429 ||
-      (error.message &&
-        (error.message.includes("429") || error.message.includes("quota")))
-    ) {
-      if (retries > 0) {
-        const waitTime = 4000 * (4 - retries);
-        console.log(
-          chalk.yellow(
-            `\nRate limit exceeded. Retrying in ${waitTime / 1000} seconds... \nDetails: ${error.message}`,
-          ),
-        );
-        await delay(waitTime);
-        return generateContentWithRetry(params, retries - 1);
-      }
+    const status = error?.response?.status || error?.status;
+    const shouldRetry =
+      status === 429 ||
+      status === 503 ||
+      (error?.message &&
+        error.message.toLowerCase().includes("temporarily unavailable"));
+
+    if (shouldRetry && retries > 0) {
+      const waitTime = 2000 * (4 - retries);
+      console.log(
+        chalk.yellow(
+          `\nOllama is busy. Retrying in ${waitTime / 1000} seconds... \nDetails: ${error.message}`,
+        ),
+      );
+      await delay(waitTime);
+      return generateContentWithRetry(params, retries - 1);
     }
+
     throw error;
   }
 }
 
 let history = [
   {
-    role: "user",
-    parts: [{ text: systemPrompt }],
+    role: "system",
+    content: systemPrompt,
   },
 ];
 
@@ -68,13 +73,124 @@ showBanner();
 rl.setPrompt(chalk.cyan.bold("❯ "));
 rl.prompt();
 
-const getFunctionCalls = (resp) => {
-  const candidate = resp.candidates?.[0];
-  return (
-    candidate?.content?.parts
-      ?.filter((p) => p.functionCall)
-      ?.map((p) => p.functionCall) || []
-  );
+const getToolCalls = (message) =>
+  Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+
+const formatToolOutput = (value) => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return String(value);
+  }
+};
+
+const parseToolArguments = (rawArgs, toolName) => {
+  if (typeof rawArgs === "string") {
+    if (!rawArgs.trim()) {
+      return {};
+    }
+
+    try {
+      return JSON.parse(rawArgs);
+    } catch (error) {
+      logError(
+        `Failed to parse arguments for ${toolName}: ${error.message}. Raw payload: ${rawArgs}`,
+      );
+      return {};
+    }
+  }
+
+  if (rawArgs && typeof rawArgs === "object") {
+    return rawArgs;
+  }
+
+  return {};
+};
+
+const normalizeStreamEntries = (stream) =>
+  stream.map((chunk, index) => {
+    if (typeof chunk === "string") {
+      return { line: index + 1, text: chunk };
+    }
+
+    return {
+      line:
+        typeof chunk?.line === "number" && Number.isFinite(chunk.line)
+          ? chunk.line
+          : index + 1,
+      text: typeof chunk?.text === "string" ? chunk.text : "",
+    };
+  });
+
+const handleToolOutput = (toolName, output) => {
+  if (output && typeof output === "object") {
+    const summary =
+      typeof output.message === "string" ? output.message : undefined;
+    const stream = Array.isArray(output.stream) ? output.stream : [];
+
+    if (stream.length > 0) {
+      const entries = normalizeStreamEntries(stream);
+      const target = typeof output.path === "string" ? output.path : toolName;
+      const message = summary || `Completed ${toolName}`;
+
+      logToolResult(toolName, message);
+      logToolStreamStart(target);
+      entries.forEach(({ line, text }) => logToolStreamChunk(line, text));
+
+      const codeBlock = entries.map(({ text }) => text).join("\n");
+      return codeBlock
+        ? `${message}\n${target}\n${codeBlock}`
+        : `${message}\n${target}`;
+    }
+
+    if (summary) {
+      const remaining = { ...output };
+      delete remaining.message;
+      delete remaining.path;
+      delete remaining.stream;
+
+      const extra = Object.keys(remaining).length
+        ? formatToolOutput(remaining)
+        : "";
+
+      logToolResult(toolName, summary);
+      return extra ? `${summary}\n${extra}` : summary;
+    }
+
+    const fallback = formatToolOutput(output);
+    logToolResult(toolName, fallback);
+    return fallback;
+  }
+
+  const rendered = formatToolOutput(output);
+  logToolResult(toolName, rendered);
+  return rendered;
+};
+
+const buildChatParams = () => {
+  const params = {
+    model: modelId,
+    messages: history,
+  };
+
+  if (toolDefinitions.length > 0) {
+    params.tools = toolDefinitions;
+  }
+
+  return params;
+};
+
+const normalizeMessage = (message) => {
+  if (!message) {
+    return { role: "assistant", content: "" };
+  }
+
+  const content = typeof message.content === "string" ? message.content : "";
+  return { ...message, content };
 };
 
 rl.on("line", async (input) => {
@@ -96,69 +212,66 @@ rl.on("line", async (input) => {
   const spinner = ora("Thinking...").start();
 
   try {
-    history.push({ role: "user", parts: [{ text: input }] });
+    history.push({ role: "user", content: input });
 
-    let response = await generateContentWithRetry({
-      model: modelId,
-      contents: history,
-      config: {
-        tools: [{ functionDeclarations: toolDeclarations }],
-      },
-    });
+    let response = await generateContentWithRetry(buildChatParams());
+    let message = normalizeMessage(response?.message);
+    let toolCalls = getToolCalls(message);
 
-    let functionCalls = getFunctionCalls(response);
+    while (toolCalls.length > 0) {
+      history.push(message);
 
-    while (functionCalls.length > 0) {
-      const candidate = response.candidates[0];
-      history.push(candidate.content);
-
-      spinner.text = `Calling tools: ${functionCalls
-        .map((c) => c.name)
+      spinner.text = `Calling tools: ${toolCalls
+        .map((call) => call?.function?.name || "unknown")
         .join(", ")}`;
 
-      const toolResponses = [];
-      for (const call of functionCalls) {
-        const tool = tools[call.name];
-        if (tool) {
+      for (const call of toolCalls) {
+        const toolName = call?.function?.name;
+        const tool = toolName ? tools[toolName] : undefined;
+        const rawArgs = call?.function?.arguments ?? {};
+        let parsedArgs = {};
+
+        if (toolName && tool) {
+          parsedArgs = parseToolArguments(rawArgs, toolName);
+
           spinner.stop();
-          logTool(call.name);
-          const output = await tool.execute(call.args);
-          toolResponses.push({
-            functionResponse: {
-              name: call.name,
-              response: { output },
-            },
+          logTool(toolName);
+
+          let output;
+          try {
+            output = await tool.execute(parsedArgs);
+          } catch (toolError) {
+            output = `Error executing tool ${toolName}: ${toolError.message || toolError}`;
+          }
+          const historyText = handleToolOutput(toolName, output) ?? "";
+          history.push({
+            role: "tool",
+            content: historyText,
+            tool_call_id: call.id,
           });
+
           spinner.start("Thinking...");
         } else {
-          toolResponses.push({
-            functionResponse: {
-              name: call.name,
-              response: { error: `Tool ${call.name} not found` },
-            },
+          const missingMessage = `Tool ${toolName || "unknown"} not found when requested by model.`;
+          const fallback =
+            handleToolOutput(toolName || "unknown", missingMessage) ??
+            missingMessage;
+          history.push({
+            role: "tool",
+            content: fallback,
+            tool_call_id: call?.id ?? "missing_tool",
           });
         }
       }
 
-      history.push({ role: "user", parts: toolResponses });
-
-      response = await generateContentWithRetry({
-        model: modelId,
-        contents: history,
-        config: {
-          tools: [{ functionDeclarations: toolDeclarations }],
-        },
-      });
-
-      functionCalls = getFunctionCalls(response);
+      response = await generateContentWithRetry(buildChatParams());
+      message = normalizeMessage(response?.message);
+      toolCalls = getToolCalls(message);
     }
 
-    const finalText = response.text
-      ? response.text
-      : response.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text ||
-        "No text response";
     spinner.stop();
 
+    const finalText = message.content || "No text response";
     const trimmed = finalText.trim();
     const hasQuestion = /\?\s*(?:$|\n)/m.test(trimmed);
     let finalOutput = finalText;
@@ -172,10 +285,10 @@ rl.on("line", async (input) => {
       finalOutput = `${finalText.trimEnd()}\n\n${followUp}`;
     }
 
-    history.push({ role: "model", parts: [{ text: finalOutput }] });
+    history.push({ role: "assistant", content: finalOutput });
   } catch (error) {
     spinner.stop();
-    logError(error.message || error);
+    logError(error.message || String(error));
   } finally {
     rl.resume();
     rl.prompt();
